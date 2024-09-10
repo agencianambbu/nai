@@ -1,0 +1,107 @@
+services:
+  postgres:
+    image: postgres:latest
+    container_name: postgres
+    env_file:
+      - .env
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_HOST: ${POSTGRES_HOST}
+    volumes:
+      - ./data/pgdb:/var/lib/postgresql/data
+    ports:
+      - '5432:5432'
+    restart: unless-stopped
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    networks:
+      - app-network
+
+  chromadb:
+    image: chromadb/chroma:latest
+    container_name: chromadb
+    ports:
+      # - "${CHROMA_HTTP_PORT}:${CHROMA_HTTP_PORT}"
+      - '8000:8000'
+    volumes:
+      - ./data/default_database:/chroma/chroma # Persistência de dados
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - CHROMA_TENANT=${CHROMA_TENANT:-default_tenant}
+      - CHROMA_DATABASE=${CHROMA_DATABASE:-default_database}
+      - CHROMA_HTTP_HOST=${CHROMA_HTTP_HOST:-chromadb}
+      - CHROMA_HTTP_PORT=${CHROMA_HTTP_PORT:-8000}
+      - CHROMA_HTTP_HEADERS=${CHROMA_HTTP_HEADERS}
+      - CHROMA_HTTP_SSL=${CHROMA_HTTP_SSL}
+      - CHROMA_DATA_PATH=${CHROMA_DATA_PATH}
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    healthcheck:
+      test: curl http://chromadb:8000/api/v1/heartbeat || exit 1
+      interval: 30s
+      timeout: 30s
+      retries: 2
+      start_period: 5s
+    networks:
+      - app-network
+
+  nai-ollama:
+    volumes:
+      - ./data/ollama:/root/.ollama
+    container_name: nai-ollama
+    pull_policy: always
+    tty: true
+    restart: unless-stopped
+    image: ollama/ollama:${OLLAMA_DOCKER_TAG-latest}
+    ports:
+      - 11433:11434
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    networks:
+      - app-network
+
+  nai-platform:
+    build:
+      context: .
+      args:
+        OLLAMA_BASE_URL: '/ollama'
+      dockerfile: Dockerfile
+    # image: ghcr.io/open-webui/open-webui:${WEBUI_DOCKER_TAG-main}
+    container_name: nai-platform
+    volumes:
+      - ./data:/app/backend/data
+    depends_on:
+      chromadb:
+        condition: service_healthy
+      nai-ollama:
+        condition: service_started
+      postgres:
+        condition: service_started
+    ports:
+      - ${OPEN_WEBUI_PORT-3000}:8080
+    env_file:
+      - .env
+    environment:
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-localhost}
+      - WEBUI_SECRET_KEY=${WEBUI_SECRET_KEY:-xpto}
+      - CHROMA_HTTP_HOST=${CHROMA_HTTP_HOST:-chromadb}
+      - CHROMA_HTTP_PORT=${CHROMA_HTTP_PORT:-8000}
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    restart: unless-stopped
+    networks:
+      - app-network
+
+volumes:
+  nai-ollama: {}
+  nai-platform: {}
+  pgdb: {}
+  default_database: {}
+
+networks:
+  app-network:
+    driver: bridge
